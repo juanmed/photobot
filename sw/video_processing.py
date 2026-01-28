@@ -8,19 +8,57 @@ import cv2
 import numpy as np
 from ultralytics import YOLO
 
+ZOOMED_FRAME_RATIO = 0.8
+ZOOM_RATIO = 0.8
+
 
 def iter_video_paths(input_dir: Path) -> list[Path]:
     """Return a sorted list of .mp4 files in the input directory."""
     return sorted(input_dir.glob("*.mp4"))
 
 
-def enqueue_videos(video_paths: Iterable[Path], output_queue: mp.Queue) -> None:
-    """Read frames from videos and enqueue them for inference."""
+def compute_zoom_frame_indices(total_frames: int, zoomed_frame_ratio: float) -> set[int]:
+    """Compute the frame indices that should be zoomed in."""
+    if total_frames <= 0 or zoomed_frame_ratio <= 0:
+        return set()
+
+    zoomed_count = int(total_frames * zoomed_frame_ratio)
+    zoomed_count = max(0, min(total_frames, zoomed_count))
+    if zoomed_count == 0:
+        return set()
+
+    leading = (total_frames - zoomed_count) // 2
+    return set(range(leading, leading + zoomed_count))
+
+
+def crop_and_resize(
+    frame: np.ndarray,
+    crop_size: tuple[int, int],
+    start_pixel: tuple[int, int],
+) -> np.ndarray:
+    """Crop the frame using the provided ROI and resize to original size."""
+    start_row, start_col = start_pixel
+    crop_h, crop_w = crop_size
+    end_row = start_row + crop_h
+    end_col = start_col + crop_w
+    cropped = frame[start_row:end_row, start_col:end_col]
+    return cv2.resize(cropped, (frame.shape[1], frame.shape[0]), interpolation=cv2.INTER_LINEAR)
+
+
+def enqueue_videos(
+    video_paths: Iterable[Path],
+    output_queue: mp.Queue,
+) -> None:
+    """Read frames from videos, apply zoom effect, and enqueue them for inference."""
     for video_path in video_paths:
         cap = cv2.VideoCapture(str(video_path))
         if not cap.isOpened():
             print(f"Failed to open video: {video_path}")
             continue
+
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 0
+        zoomed_indices = compute_zoom_frame_indices(
+            total_frames, ZOOMED_FRAME_RATIO)
 
         frame_idx = 0
         while True:
@@ -29,6 +67,17 @@ def enqueue_videos(video_paths: Iterable[Path], output_queue: mp.Queue) -> None:
                 break
             height, width = frame.shape[:2]
             print(f"{video_path.name} frame {frame_idx}: {width}x{height}")
+
+            if ZOOM_RATIO < 1.0 and frame_idx in zoomed_indices:
+                crop_w = int(ZOOM_RATIO * width)
+                crop_h = int(ZOOM_RATIO * height)
+                crop_w = max(1, min(width, crop_w))
+                crop_h = max(1, min(height, crop_h))
+                start_row = 0
+                start_col = max(0, (width - crop_w) // 2)
+                frame = crop_and_resize(
+                    frame, (crop_h, crop_w), (start_row, start_col))
+
             output_queue.put((video_path.name, frame_idx, frame))
             frame_idx += 1
 

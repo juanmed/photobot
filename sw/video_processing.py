@@ -8,8 +8,9 @@ import cv2
 import numpy as np
 from ultralytics import YOLO
 
-ZOOMED_FRAME_RATIO = 0.8
-ZOOM_RATIO = 0.8
+ZOOMED_FRAME_RATIO = 0.7
+ZOOM_RATIO = 0.6
+ZOOM_TRANSITION_RATIO = 0.05
 
 
 def iter_video_paths(input_dir: Path) -> list[Path]:
@@ -17,18 +18,48 @@ def iter_video_paths(input_dir: Path) -> list[Path]:
     return sorted(input_dir.glob("*.mp4"))
 
 
-def compute_zoom_frame_indices(total_frames: int, zoomed_frame_ratio: float) -> set[int]:
-    """Compute the frame indices that should be zoomed in."""
+def compute_zoom_frame_indices(
+    total_frames: int,
+    zoomed_frame_ratio: float,
+    zoom_ratio: float,
+    zoom_transition_ratio: float,
+) -> dict[int, float]:
+    """Compute the frame indices to zoom and their per-frame zoom ratios."""
     if total_frames <= 0 or zoomed_frame_ratio <= 0:
-        return set()
+        return {}
 
     zoomed_count = int(total_frames * zoomed_frame_ratio)
     zoomed_count = max(0, min(total_frames, zoomed_count))
     if zoomed_count == 0:
-        return set()
+        return {}
 
     leading = (total_frames - zoomed_count) // 2
-    return set(range(leading, leading + zoomed_count))
+    zoomed_indices = list(range(leading, leading + zoomed_count))
+
+    transition_count = int(total_frames * zoom_transition_ratio)
+    transition_count = max(0, min(zoomed_count, transition_count))
+
+    zoom_map: dict[int, float] = {}
+    if transition_count == 0:
+        for idx in zoomed_indices:
+            zoom_map[idx] = zoom_ratio
+        return zoom_map
+
+    for offset, frame_idx in enumerate(zoomed_indices):
+        if offset < transition_count:
+            step = offset / (transition_count -
+                             1) if transition_count > 1 else 1.0
+            ratio = 1.0 + (zoom_ratio - 1.0) * step
+        elif offset >= zoomed_count - transition_count:
+            tail_offset = offset - (zoomed_count - transition_count)
+            step = tail_offset / (transition_count -
+                                  1) if transition_count > 1 else 1.0
+            ratio = zoom_ratio + (1.0 - zoom_ratio) * step
+        else:
+            ratio = zoom_ratio
+        zoom_map[frame_idx] = ratio
+
+    return zoom_map
 
 
 def crop_and_resize(
@@ -57,8 +88,12 @@ def enqueue_videos(
             continue
 
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 0
-        zoomed_indices = compute_zoom_frame_indices(
-            total_frames, ZOOMED_FRAME_RATIO)
+        zoomed_map = compute_zoom_frame_indices(
+            total_frames,
+            ZOOMED_FRAME_RATIO,
+            ZOOM_RATIO,
+            ZOOM_TRANSITION_RATIO,
+        )
 
         frame_idx = 0
         while True:
@@ -68,9 +103,10 @@ def enqueue_videos(
             height, width = frame.shape[:2]
             print(f"{video_path.name} frame {frame_idx}: {width}x{height}")
 
-            if ZOOM_RATIO < 1.0 and frame_idx in zoomed_indices:
-                crop_w = int(ZOOM_RATIO * width)
-                crop_h = int(ZOOM_RATIO * height)
+            zoom_value = zoomed_map.get(frame_idx)
+            if zoom_value is not None and zoom_value < 1.0:
+                crop_w = int(zoom_value * width)
+                crop_h = int(zoom_value * height)
                 crop_w = max(1, min(width, crop_w))
                 crop_h = max(1, min(height, crop_h))
                 start_row = 0

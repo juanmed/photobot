@@ -1,0 +1,9 @@
+[project]
+name = "photobot"
+version = "0.1.0"
+description = "HW and SW for the photobot"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "rpi-hardware-pwm>=0.3.1",
+]

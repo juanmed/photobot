@@ -15,8 +15,7 @@ for i in range(0, 100, 5):
     sleep(1)
 
 print("Ramp down!")
-for i in range(100, 0, -5):
-    range()    
+for i in range(100, 0, -5):   
     print(f"DT: {i}%")
     pwm.change_duty_cycle(i)
     sleep(1)

@@ -2,13 +2,23 @@ from rpi_hardware_pwm import HardwarePWM
 from time import sleep
 
 # Using RPI5 so channel=2 for gpio18
-print("Setup HW PWM")
+print("Setup HW PWM @ 20khz")
 pwm = HardwarePWM(pwm_channel=2, hz=20_000, chip=0)
-pwm.start(5) # full duty cycle
-print("60hz, 95%")
-sleep(5)
-pwm.change_duty_cycle(10)
-#pwm.change_frequency(25_000)
-print("25khz, 50%")
-sleep(5)
+pwm.start(0) # stop
+sleep(1)
+
+# Ramp duty cycle up
+print("Ramp up!")
+for i in range(0, 100, 5):    
+    print(f"DT: {i}%")
+    pwm.change_duty_cycle(i)
+    sleep(1)
+
+print("Ramp down!")
+for i in range(100, 0, -5):
+    range()    
+    print(f"DT: {i}%")
+    pwm.change_duty_cycle(i)
+    sleep(1)
+
 pwm.stop()

@@ -20,15 +20,16 @@ async def pwm_ramp(pwm: HardwarePWM) -> None:
 class Encoder:
 
     def __init__(self):
-        # Initialize the rotary encoder on GPIO pins 17(CLK) and 27(DT) with wrap-around at max_steps of 16
-        self.encoder = RotaryEncoder(a=17, b=27, wrap=True, max_steps=16)
+        # Initialize the rotary encoder on GPIO pins 17(CLK) and 27(DT) with wrap-around=0 
+        # to let it count infinitely
+        self.encoder = RotaryEncoder(a=17, b=27, wrap=False, max_steps=0)
         # Initialize the rotary encoder's SW pin on GPIO pin 22
         self.button = Button(22)
     
     async def read_step(self)->int:
         return self.encoder.steps
     
-    async def read_button(self)->int:
+    async def read_button(self)->None:
         if self.button.is_pressed:
             print("Button pressed!")  # Print message on button press
             await self.button.wait_for_release()  # Wait until button is released
@@ -49,6 +50,7 @@ async def main():
             await pwm_ramp(pwm)
             step = await encoder.read_step()
             print(f"Current step: {step}")
+            await encoder.read_button()
     finally:
         pwm.stop()
         print("Stopping pwm...")

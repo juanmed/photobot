@@ -49,10 +49,12 @@ async def main():
 
     try:
         while True:
-            asyncio.create_task(pwm_ramp(pwm))
-            asyncio.create_task(encoder.read_step())
-            asyncio.create_task(encoder.read_button())
-            
+            t1 = asyncio.create_task(pwm_ramp(pwm))
+            t2 = asyncio.create_task(encoder.read_step())
+            t3 = asyncio.create_task(encoder.read_button())
+            await t1
+            await t2
+            await t3
     finally:
         pwm.stop()
         print("Stopping pwm...")

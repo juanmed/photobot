@@ -46,10 +46,12 @@ async def main():
 
     try:
         while True:
-            await pwm_ramp(pwm)
-            step = await encoder.read_step()
+            _, step, _ = await asyncio.gather(
+                pwm_ramp(pwm),
+                encoder.read_step(),
+                encoder.read_button(),
+            )
             print(f"Current step: {step}")
-            await encoder.read_button()
     finally:
         pwm.stop()
         print("Stopping pwm...")

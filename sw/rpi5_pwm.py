@@ -19,8 +19,7 @@ async def pwm_ramp(pwm: HardwarePWM) -> None:
 
 class Encoder:
 
-    def init(self):
-        self.count = 0
+    def __init__(self):
         # Initialize the rotary encoder on GPIO pins 17(CLK) and 27(DT) with wrap-around at max_steps of 16
         self.encoder = RotaryEncoder(a=17, b=27, wrap=True, max_steps=16)
         # Initialize the rotary encoder's SW pin on GPIO pin 22
@@ -40,7 +39,7 @@ async def main():
 
     try:
         while True:
-            await pwm_ramp()
+            await pwm_ramp(pwm)
             step = await encoder.read_step()
             print(f"Current step: {step}")
     finally:
@@ -49,7 +48,7 @@ async def main():
 
 if __name__ == "__main__":
     try:
-        asyncio.run(main)
+        asyncio.run(main())
     except KeyboardInterrupt:
         print("User stopped")
 

@@ -27,6 +27,13 @@ class Encoder:
     
     async def read_step(self)->int:
         return self.encoder.steps
+    
+    async def read_button(self)->int:
+        if self.button.is_pressed:
+            print("Button pressed!")  # Print message on button press
+            await self.button.wait_for_release()  # Wait until button is released
+            print("Button depressed!")
+
 
 async def main():
     # Using RPI5 so channel=2 for gpio18

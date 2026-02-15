@@ -1,3 +1,5 @@
+# Inspired from https://docs.sunfounder.com/projects/umsk/en/latest/05_raspberry_pi/pi_lesson17_rotary_encoder.html
+
 from rpi_hardware_pwm import HardwarePWM
 from time import sleep
 import asyncio
@@ -26,8 +28,9 @@ class Encoder:
         # Initialize the rotary encoder's SW pin on GPIO pin 22
         self.button = Button(22)
 
-    async def read_step(self)->int:
-        return self.encoder.steps
+    async def read_step(self)->None:
+        print(f"Current step: {self.encoder.steps}")
+        await asyncio.sleep(0.05)
     
     async def read_button(self)->None:
         if self.button.is_pressed:
@@ -46,12 +49,10 @@ async def main():
 
     try:
         while True:
-            _, step, _ = await asyncio.gather(
-                pwm_ramp(pwm),
-                encoder.read_step(),
-                encoder.read_button(),
-            )
-            print(f"Current step: {step}")
+            asyncio.create_task(pwm_ramp(pwm))
+            asyncio.create_task(encoder.read_step())
+            asyncio.create_task(encoder.read_button())
+            
     finally:
         pwm.stop()
         print("Stopping pwm...")

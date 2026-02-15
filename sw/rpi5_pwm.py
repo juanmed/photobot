@@ -25,15 +25,18 @@ class Encoder:
         self.encoder = RotaryEncoder(a=17, b=27, wrap=False, max_steps=0)
         # Initialize the rotary encoder's SW pin on GPIO pin 22
         self.button = Button(22)
+        self.button.when_released(self.button_released)
     
+    def button_released(self):
+        print("Button released!")
+
     async def read_step(self)->int:
         return self.encoder.steps
     
     async def read_button(self)->None:
         if self.button.is_pressed:
             print("Button pressed!")  # Print message on button press
-            await self.button.wait_for_release()  # Wait until button is released
-            print("Button depressed!")
+            await asyncio.sleep(0.1)
 
 
 async def main():

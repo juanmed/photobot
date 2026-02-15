@@ -7,7 +7,13 @@ requires-python = ">=3.12"
 dependencies = [
     "asyncio>=4.0.0",
     "gpiozero>=2.0.1",
-    "pyqt5>=5.15.11",
-    "pyqtgraph>=0.13.7",
+    "pyqt5>=5.15.2",
+    "pyqtgraph>=0.14.0",
     "rpi-hardware-pwm>=0.3.1",
+]
+
+[tool.uv]
+required-environments = [
+    "sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "sys_platform == 'linux' and platform_machine == 'aarch64'",
 ]

@@ -8,6 +8,7 @@ dependencies = [
     "asyncio>=4.0.0",
     "gpiozero>=2.0.1",
     "lgpio>=0.2.2.0",
+    "numpy>=2.4.2",
     "rpi-hardware-pwm>=0.3.1",
 ]
 

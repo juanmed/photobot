@@ -45,14 +45,20 @@ async def main():
     # Using RPI5 so channel=2 for gpio18
     print("Setup HW PWM @ 20khz")
     pwm = HardwarePWM(pwm_channel=2, hz=20_000, chip=0)
-    pwm.start(0) # stop
+    pwm0 = HardwarePWM(pwm_channel=0, hz=30_000, chip=0)
+    pwm1 = HardwarePWM(pwm_channel=1, hz=40_000, chip=0)
+    pwm.start(0) 
+    pwm0.start(0)
+    pwm1.start(0) 
     await asyncio.sleep(1)
 
     encoder = Encoder()
     pwm_task = asyncio.create_task(pwm_ramp(pwm))
+    pwm0_task = asyncio.create_task(pwm_ramp(pwm0))
+    pwm1_task = asyncio.create_task(pwm_ramp(pwm1))
     step_task = asyncio.create_task(encoder.read_step())
     button_task = asyncio.create_task(encoder.read_button())
-    tasks = (pwm_task, step_task, button_task)
+    tasks = (pwm_task, pwm0_task, pwm1_task, step_task, button_task)
 
     try:
         await asyncio.gather(*tasks)

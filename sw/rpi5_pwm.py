@@ -3,21 +3,23 @@
 from rpi_hardware_pwm import HardwarePWM
 import asyncio
 from contextlib import suppress
+import numpy as np
 from typing import Tuple
 from gpiozero import RotaryEncoder, Button
+
 
 async def pwm_ramp(pwm: HardwarePWM, dt_range: Tuple = (0, 100), step_size : float = 5) -> None:
     dt_min, dt_max = dt_range
     while True:
         # Ramp duty cycle up
         print("Ramp up!")
-        for i in range(dt_min, dt_max, step_size):
+        for i in np.arange(dt_min, dt_max, step_size):
             print(f"DT: {i}%")
             pwm.change_duty_cycle(i)
             await asyncio.sleep(0.25)
 
         print("Ramp down!")
-        for i in range(dt_max, dt_min, -step_size):
+        for i in np.arange(dt_max, dt_min, -step_size):
             print(f"DT: {i}%")
             pwm.change_duty_cycle(i)
             await asyncio.sleep(0.25)

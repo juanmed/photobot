@@ -1,12 +1,9 @@
-import sys
-import time
 import threading
+import time
+import tkinter as tk
 from collections import deque
 from dataclasses import dataclass, field
 
-import pyqtgraph as pg
-from PyQt5.QtCore import QThread, pyqtSignal, pyqtSlot
-from PyQt5.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QWidget
 from gpiozero import Button, RotaryEncoder
 from rpi_hardware_pwm import HardwarePWM
 
@@ -108,125 +105,174 @@ class PwmWorker(threading.Thread):
             print("Stopping pwm...")
 
 
-class PlotDataWorker(QThread):
-    sample_ready = pyqtSignal(float, float, float)
-
+class EncoderPwmTkGui:
     def __init__(
         self,
         state: SharedState,
         stop_event: threading.Event,
         *,
-        sample_period_s: float = 0.05,
+        sample_period_ms: int = 50,
     ) -> None:
-        super().__init__()
         self.state = state
         self.stop_event = stop_event
-        self.sample_period_s = sample_period_s
-
-    def run(self) -> None:
-        t0 = time.monotonic()
-        while not self.stop_event.is_set():
-            with self.state.lock:
-                step = float(self.state.steps)
-                duty = float(self.state.duty_cycle)
-            t_now = time.monotonic() - t0
-            self.sample_ready.emit(t_now, step, duty)
-            if self.stop_event.wait(self.sample_period_s):
-                break
-
-
-class EncoderPwmWindow(QMainWindow):
-    def __init__(self, state: SharedState, stop_event: threading.Event) -> None:
-        super().__init__()
-        self.state = state
-        self.stop_event = stop_event
-        self.setWindowTitle("Encoder Steps and PWM Duty Cycle")
-        self.resize(1000, 600)
+        self.sample_period_ms = sample_period_ms
+        self.window_s = 10.0
 
         self.times: deque[float] = deque()
         self.steps: deque[float] = deque()
         self.duties: deque[float] = deque()
+        self.t0 = time.monotonic()
 
-        container = QWidget()
-        layout = QVBoxLayout(container)
-        self.setCentralWidget(container)
+        self.root = tk.Tk()
+        self.root.title("Encoder Steps and PWM Duty Cycle")
+        self.root.geometry("1000x600")
+        self.root.configure(bg="#111111")
 
-        pg.setConfigOptions(antialias=True)
-        self.plot_widget = pg.PlotWidget()
-        layout.addWidget(self.plot_widget)
+        self.canvas = tk.Canvas(self.root, bg="#1b1b1b", highlightthickness=0)
+        self.canvas.pack(fill=tk.BOTH, expand=True)
 
-        self.plot_item = self.plot_widget.getPlotItem()
-        self.plot_item.setLabel("bottom", "Time (s)")
-        self.plot_item.setLabel("left", "Encoder Steps")
-        self.plot_item.setYRange(-50_000, 50_000, padding=0.0)
-        self.plot_item.showGrid(x=True, y=True, alpha=0.25)
+        self.canvas.bind("<Configure>", self._on_resize)
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
-        self.step_curve = self.plot_item.plot(
-            pen=pg.mkPen(color=(40, 180, 99), width=2),
-            name="Steps",
-        )
+    def _on_resize(self, _event: tk.Event) -> None:
+        self._draw()
 
-        self.duty_viewbox = pg.ViewBox()
-        self.plot_item.showAxis("right")
-        right_axis = self.plot_item.getAxis("right")
-        right_axis.setLabel("Duty Cycle (%)")
-        right_axis.setPen(pg.mkPen(color=(235, 87, 87)))
-        self.plot_item.scene().addItem(self.duty_viewbox)
-        right_axis.linkToView(self.duty_viewbox)
-        self.duty_viewbox.setXLink(self.plot_item.vb)
-        self.duty_viewbox.setYRange(0, 100, padding=0.0)
-        self.duty_curve = pg.PlotCurveItem(pen=pg.mkPen(color=(235, 87, 87), width=2))
-        self.duty_viewbox.addItem(self.duty_curve)
+    def _on_close(self) -> None:
+        self.stop_event.set()
+        self.root.destroy()
 
-        self.plot_item.vb.sigResized.connect(self._sync_right_axis)
-        self._sync_right_axis()
+    @staticmethod
+    def _map_x(t_now: float, x0: float, width: float, window_s: float) -> float:
+        return x0 + (t_now / window_s) * width
 
-        self.plot_worker = PlotDataWorker(self.state, self.stop_event, sample_period_s=0.05)
-        self.plot_worker.sample_ready.connect(self.on_sample_ready)
-        self.plot_worker.start()
+    @staticmethod
+    def _map_y(value: float, y_min: float, y_max: float, y0: float, height: float) -> float:
+        if y_max == y_min:
+            return y0 + height / 2.0
+        ratio = (value - y_min) / (y_max - y_min)
+        return y0 + (1.0 - ratio) * height
 
-    def _sync_right_axis(self) -> None:
-        self.duty_viewbox.setGeometry(self.plot_item.vb.sceneBoundingRect())
-        self.duty_viewbox.linkedViewChanged(self.plot_item.vb, self.duty_viewbox.XAxis)
-
-    @pyqtSlot(float, float, float)
-    def on_sample_ready(self, t_now: float, step: float, duty: float) -> None:
-        self.times.append(t_now)
-        self.steps.append(step)
-        self.duties.append(duty)
-
-        cutoff = t_now - 10.0
+    def _trim_to_window(self, t_now: float) -> None:
+        cutoff = t_now - self.window_s
         while self.times and self.times[0] < cutoff:
             self.times.popleft()
             self.steps.popleft()
             self.duties.popleft()
 
-        x_data = list(self.times)
-        self.step_curve.setData(x_data, list(self.steps))
-        self.duty_curve.setData(x_data, list(self.duties))
-        self.plot_item.setXRange(max(0.0, t_now - 10.0), max(10.0, t_now), padding=0.0)
+    def _append_sample(self) -> None:
+        with self.state.lock:
+            step = float(self.state.steps)
+            duty = float(self.state.duty_cycle)
 
-    def closeEvent(self, event) -> None:  # noqa: N802
-        self.stop_event.set()
-        self.plot_worker.wait(1000)
-        super().closeEvent(event)
+        t_now = time.monotonic() - self.t0
+        self.times.append(t_now)
+        self.steps.append(step)
+        self.duties.append(duty)
+        self._trim_to_window(t_now)
+
+    def _draw_axes(self, left: int, top: int, right: int, bottom: int) -> None:
+        self.canvas.create_rectangle(left, top, right, bottom, outline="#3a3a3a", width=1)
+
+        self.canvas.create_text(left, top - 12, text="Encoder Steps", fill="#45d483", anchor="w")
+        self.canvas.create_text(right, top - 12, text="Duty Cycle (%)", fill="#ef6b6b", anchor="e")
+        self.canvas.create_text((left + right) / 2, bottom + 18, text="Time (s)", fill="#c8c8c8")
+
+        self.canvas.create_text(left - 8, top, text="50k", fill="#c8c8c8", anchor="e")
+        self.canvas.create_text(left - 8, (top + bottom) / 2, text="0", fill="#c8c8c8", anchor="e")
+        self.canvas.create_text(left - 8, bottom, text="-50k", fill="#c8c8c8", anchor="e")
+
+        self.canvas.create_text(right + 8, top, text="100", fill="#c8c8c8", anchor="w")
+        self.canvas.create_text(right + 8, (top + bottom) / 2, text="50", fill="#c8c8c8", anchor="w")
+        self.canvas.create_text(right + 8, bottom, text="0", fill="#c8c8c8", anchor="w")
+
+        for i in range(11):
+            x = left + (right - left) * (i / 10.0)
+            self.canvas.create_line(x, top, x, bottom, fill="#2a2a2a")
+            label = f"{-10 + i:d}"
+            self.canvas.create_text(x, bottom + 4, text=label, fill="#999999", anchor="n")
+
+        for i in range(1, 5):
+            y = top + (bottom - top) * (i / 5.0)
+            self.canvas.create_line(left, y, right, y, fill="#262626")
+
+    def _draw_series(self, left: int, top: int, right: int, bottom: int) -> None:
+        if len(self.times) < 2:
+            return
+
+        t_end = self.times[-1]
+        t_start = max(0.0, t_end - self.window_s)
+        plot_width = right - left
+        plot_height = bottom - top
+
+        step_points: list[float] = []
+        duty_points: list[float] = []
+
+        for t, step, duty in zip(self.times, self.steps, self.duties):
+            t_local = t - t_start
+            if t_local < 0.0:
+                continue
+
+            x = self._map_x(t_local, left, plot_width, self.window_s)
+            y_step = self._map_y(step, -50_000.0, 50_000.0, top, plot_height)
+            y_duty = self._map_y(duty, 0.0, 100.0, top, plot_height)
+
+            step_points.extend((x, y_step))
+            duty_points.extend((x, y_duty))
+
+        if len(step_points) >= 4:
+            self.canvas.create_line(*step_points, fill="#45d483", width=2, smooth=False)
+        if len(duty_points) >= 4:
+            self.canvas.create_line(*duty_points, fill="#ef6b6b", width=2, smooth=False)
+
+    def _draw_latest_values(self, left: int, top: int) -> None:
+        if not self.times:
+            return
+        step = self.steps[-1]
+        duty = self.duties[-1]
+        text = f"step={step:.0f}   duty={duty:.1f}%"
+        self.canvas.create_text(left, top - 28, text=text, fill="#e6e6e6", anchor="w")
+
+    def _draw(self) -> None:
+        self.canvas.delete("all")
+        width = max(400, self.canvas.winfo_width())
+        height = max(300, self.canvas.winfo_height())
+
+        left = 70
+        right = width - 70
+        top = 50
+        bottom = height - 55
+
+        self._draw_axes(left, top, right, bottom)
+        self._draw_series(left, top, right, bottom)
+        self._draw_latest_values(left, top)
+
+    def _tick(self) -> None:
+        if self.stop_event.is_set():
+            return
+        self._append_sample()
+        self._draw()
+        self.root.after(self.sample_period_ms, self._tick)
+
+    def run(self) -> int:
+        self.root.after(self.sample_period_ms, self._tick)
+        self.root.mainloop()
+        return 0
 
 
 def run_gui() -> int:
     state = SharedState()
     stop_event = threading.Event()
+
     pwm_worker = PwmWorker(state, stop_event)
     encoder_worker = EncoderWorker(state, stop_event)
 
     pwm_worker.start()
     encoder_worker.start()
 
-    app = QApplication(sys.argv)
-    window = EncoderPwmWindow(state, stop_event)
-    window.show()
+    gui = EncoderPwmTkGui(state, stop_event, sample_period_ms=50)
 
     try:
-        return app.exec_()
+        return gui.run()
     finally:
         stop_event.set()
         pwm_worker.join(timeout=2.0)

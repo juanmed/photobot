@@ -3,8 +3,8 @@
 from rpi_hardware_pwm import HardwarePWM
 import asyncio
 from contextlib import suppress
+from typing import Tuple
 from gpiozero import RotaryEncoder, Button
-import Tuple
 
 async def pwm_ramp(pwm: HardwarePWM, dt_range: Tuple = (0, 100), step_size : float = 5) -> None:
     dt_min, dt_max = dt_range

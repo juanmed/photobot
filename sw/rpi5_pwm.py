@@ -4,21 +4,23 @@ from rpi_hardware_pwm import HardwarePWM
 import asyncio
 from contextlib import suppress
 from gpiozero import RotaryEncoder, Button
+import Tuple
 
-async def pwm_ramp(pwm: HardwarePWM) -> None:
+async def pwm_ramp(pwm: HardwarePWM, dt_range: Tuple = (0, 100), step_size : float = 5) -> None:
+    dt_min, dt_max = dt_range
     while True:
         # Ramp duty cycle up
         print("Ramp up!")
-        for i in range(0, 20, 5):
+        for i in range(dt_min, dt_max, step_size):
             print(f"DT: {i}%")
             pwm.change_duty_cycle(i)
-            await asyncio.sleep(1)
+            await asyncio.sleep(0.25)
 
         print("Ramp down!")
-        for i in range(20, 0, -5):
+        for i in range(dt_max, dt_min, -step_size):
             print(f"DT: {i}%")
             pwm.change_duty_cycle(i)
-            await asyncio.sleep(1)
+            await asyncio.sleep(0.25)
 
 class Encoder:
 
@@ -45,16 +47,16 @@ async def main():
     # Using RPI5 so channel=2 for gpio18
     print("Setup HW PWM @ 20khz")
     pwm = HardwarePWM(pwm_channel=2, hz=20_000, chip=0)
-    pwm0 = HardwarePWM(pwm_channel=0, hz=30_000, chip=0)
-    pwm1 = HardwarePWM(pwm_channel=1, hz=40_000, chip=0)
+    pwm0 = HardwarePWM(pwm_channel=0, hz=50, chip=0)
+    pwm1 = HardwarePWM(pwm_channel=1, hz=50, chip=0)
     pwm.start(0) 
     pwm0.start(0)
     pwm1.start(0) 
     await asyncio.sleep(1)
 
     encoder = Encoder()
-    pwm_task = asyncio.create_task(pwm_ramp(pwm))
-    pwm0_task = asyncio.create_task(pwm_ramp(pwm0))
+    pwm_task = asyncio.create_task(pwm_ramp(pwm, (0, 20), 5))
+    pwm0_task = asyncio.create_task(pwm_ramp(pwm0, (5, 10), 0.1))
     pwm1_task = asyncio.create_task(pwm_ramp(pwm1))
     step_task = asyncio.create_task(encoder.read_step())
     button_task = asyncio.create_task(encoder.read_button())

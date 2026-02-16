@@ -14,13 +14,13 @@ async def pwm_ramp(pwm: HardwarePWM, dt_range: Tuple = (0, 100), step_size : flo
         # Ramp duty cycle up
         print("Ramp up!")
         for i in np.arange(dt_min, dt_max, step_size):
-            print(f"DT: {i}%")
+            print(f"Ch {pwm.pwm_channel} DT: {i}%")
             pwm.change_duty_cycle(i)
             await asyncio.sleep(0.25)
 
         print("Ramp down!")
         for i in np.arange(dt_max, dt_min, -step_size):
-            print(f"DT: {i}%")
+            print(f"Ch {pwm.pwm_channel} DT: {i}%")
             pwm.change_duty_cycle(i)
             await asyncio.sleep(0.25)
 

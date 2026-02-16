@@ -59,7 +59,7 @@ async def main():
     encoder = Encoder()
     pwm_task = asyncio.create_task(pwm_ramp(pwm, (0, 20), 5))
     pwm0_task = asyncio.create_task(pwm_ramp(pwm0, (5, 10), 0.1))
-    pwm1_task = asyncio.create_task(pwm_ramp(pwm1))
+    pwm1_task = asyncio.create_task(pwm_ramp(pwm1, (5, 10), 0.1))
     step_task = asyncio.create_task(encoder.read_step())
     button_task = asyncio.create_task(encoder.read_button())
     tasks = (pwm_task, pwm0_task, pwm1_task, step_task, button_task)

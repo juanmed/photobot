@@ -1,3 +1,7 @@
+# Configure 4 Hardware PWMs following:
+# https://gist.github.com/Gadgetoid/b92ad3db06ff8c264eef2abf0e09d569?permalink_comment_id=5045536
+
+
 import threading
 import time
 import tkinter as tk

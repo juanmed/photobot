@@ -1,2 +1,7 @@
 *.mp4
 sw/__pycache__/*
+# Codev
+.agent-farm/
+.consult/
+codev/.update-hashes.json
+.builders/

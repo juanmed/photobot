@@ -1,6 +1,6 @@
 {
   "shell": {
-    "architect": "codex",
+    "architect": "claude",
     "builder": "codex",
     "shell": "bash"
   }

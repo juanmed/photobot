@@ -13,6 +13,7 @@
   - All motors must be controlled simultaneously/in parallel.
   - Operation must be real-time and time synchronized for smooth and safe robot arm motion.
   - Current request scope is limited to specification and single-agent review only.
+  - Implementation language is Python; code must follow Pythonic conventions and Python best practices for real-time systems.
 
 ## Problem Statement
 Robot arm control quality and safety degrade when PWM outputs are not coordinated with deterministic timing. The system needs a dedicated low-level control class that manages multiple hardware PWM channels on Raspberry Pi 5, supports per-motor PWM parameters, applies synchronized updates, and enforces safety behavior under invalid input or timing faults.
@@ -27,9 +28,9 @@ Robot arm control quality and safety degrade when PWM outputs are not coordinate
 
 ## Desired State
 A production-ready specification defines a hardware PWM control class that:
-- Models each motor channel independently (frequency + duty cycle + enable state).
+- Models each motor channel independently (frequency + duty cycle + enable state), where each channel is configured with explicit valid ranges for frequency and duty cycle; all calls that modify frequency or duty cycle validate inputs against these ranges before any hardware write.
 - Applies command updates to all configured motors in a deterministic synchronized control cycle.
-- Supports real-time periodic command updates suitable for smooth robot-arm motion.
+- Supports real-time periodic command updates at a control loop rate of at least 1000 Hz (ideally higher if hardware supports it), suitable for smooth robot-arm motion. Note: this control loop rate is independent of the PWM carrier frequency, which may range from a few Hz to MHz depending on the motor driver.
 - Enforces fail-safe constraints and safe fallback states when commands or timing are invalid.
 - Is testable via deterministic functional and timing-oriented acceptance criteria.
 
@@ -55,6 +56,8 @@ A production-ready specification defines a hardware PWM control class that:
 - Must use project-approved `HardwarePWM` interface/library for actual PWM output.
 - Must support simultaneous control of multiple BLDC driver channels.
 - Must avoid non-deterministic update ordering that can desynchronize motor outputs.
+- Must be thread-safe for concurrent command submission from multiple threads and processes, while preserving deterministic synchronized updates on the dedicated control thread.
+- Must be implemented in Python, following Pythonic conventions and Python best practices for real-time systems (e.g., avoiding the GIL for timing-critical paths, preferring `threading` or `multiprocessing` primitives with care, minimizing allocations in hot loops).
 
 ### Business Constraints
 - Safety behavior must be explicit and auditable.
@@ -106,7 +109,7 @@ A production-ready specification defines a hardware PWM control class that:
 - [ ] Hardware channel count and mapping constraints on Raspberry Pi 5 for selected `HardwarePWM` backend.
 
 ### Important (Affects Design)
-- [ ] Threading model expectation (single control thread vs multi-threaded command producers).
+- [x] Threading model expectation (single control thread vs multi-threaded command producers). **Decision**: The class must support concurrent access from multiple threads and processes. It is one component of a larger system that will include higher-level controllers, planners, computer vision, navigation, and localization modules. The design must account for thread-safe command submission while preserving deterministic synchronized updates on the control thread.
 - [ ] Required behavior when one channel update fails during synchronized commit.
 - [ ] Startup/shutdown sequencing requirements for safe motor arming/disarming.
 
@@ -174,3 +177,19 @@ Not yet completed in this document; single-agent consultation result is captured
 ## Amendments
 
 This section tracks all TICK amendments to this specification. TICKs are lightweight changes that refine an existing spec rather than creating a new one.
+
+### Amendment 2 — 2026-03-09: Architect annotation review (language constraint)
+
+Addressed one `REVIEW(@architect)` annotation:
+
+1. **Implementation language** (Clarifying Questions + Technical Constraints): Specified that implementation must be in Python, following Pythonic conventions and Python best practices for real-time systems. Added to user-provided requirements and as a Technical Constraint with guidance on GIL awareness, concurrency primitives, and minimizing hot-loop allocations.
+
+---
+
+### Amendment 1 — 2026-03-09: Architect annotation review
+
+Addressed three `REVIEW(@architect)` annotations:
+
+1. **Input range validation** (Desired State): Clarified that each channel is configured with explicit valid ranges, and that all frequency/duty-cycle modification calls validate against those ranges before any hardware write.
+2. **Control loop rate** (Desired State): Specified the real-time periodic update rate as ≥1000 Hz, and explicitly distinguished it from the PWM carrier frequency (few Hz to MHz range).
+3. **Threading model** (Open Questions): Resolved as multi-threaded/multi-process. The class must support concurrent command submission from multiple threads and processes while preserving deterministic synchronized updates on the control thread. Added corresponding Technical Constraint.

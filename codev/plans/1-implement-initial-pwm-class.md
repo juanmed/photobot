@@ -8,12 +8,14 @@
 
 ## Executive Summary
 
-Implement a centralized `PWMController` class (Approach 1 from spec) that manages 2–4 hardware PWM channels on Raspberry Pi 5 for BLDC motor control. The class exposes an `update()` method called by an external scheduler; it does not own a control loop. Thread-safe command submission is supported via a lock. Fail-safe behavior (duty=0 then disable for all channels) is enforced on any partial update failure. The implementation uses the existing `rpi_hardware_pwm` library (`HardwarePWM`) already present in the codebase.
+Implement a centralized `PWMController` class (Approach 1 from spec) that manages **all available hardware PWM channels on Raspberry Pi 5** (up to 4: channels 0–3 on the configured chip). The class is designed to maximize channel utilization — all 4 channels are supported and can be registered simultaneously. The class exposes an `update()` method called by an external scheduler; it does not own a control loop. Thread-safe command submission is supported via a lock. Fail-safe behavior (duty=0 then disable for all channels) is enforced on any partial update failure. The implementation uses the existing `rpi_hardware_pwm` library (`HardwarePWM`) already present in the codebase.
 
 ## Success Metrics
 - [ ] All spec success criteria met
+- [ ] All 4 Pi 5 PWM channels (0–3) supported and registerable simultaneously
 - [ ] Unit test coverage ≥90% (excluding hardware-only paths)
-- [ ] Tests run cleanly with mock `HardwarePWM` backend (no real hardware required)
+- [ ] Mock-based tests pass with no hardware attached
+- [ ] Hardware integration tests pass on real Raspberry Pi 5
 - [ ] `update()` sequential write window measured and logged (p50/p95/p99)
 - [ ] Fail-safe verified: duty=0 then disable on any channel fault
 - [ ] Thread-safe command submission smoke-tested
@@ -61,7 +63,7 @@ Implement a centralized `PWMController` class (Approach 1 from spec) that manage
 ```
 ChannelConfig:
     channel_id: str
-    pwm_channel: int                      # HardwarePWM channel number (0-3)
+    pwm_channel: int                      # HardwarePWM channel number (0-3); all 4 supported
     chip: int                             # configurable chip number (0 or 1)
     freq_hz: float                        # initial/current frequency
     duty_pct: float                       # initial/current duty cycle (0.0-100.0)
@@ -322,22 +324,31 @@ Remove lock acquisition from all methods and `_lock` initialization.
 - Consolidate all incremental tests added in Phases 1–4 into a final passing suite.
 - Fill any coverage gaps (target ≥90% on `sw/pwm_controller.py`).
 - Add thread-safety stress test and optional latency simulation test.
+- Add hardware integration tests that run on real Raspberry Pi 5 hardware when available.
 
 #### Deliverables
 - [ ] `sw/tests/test_pwm_controller.py` — complete test suite passing at ≥90% coverage
 - [ ] Thread-safety stress test (10 threads × 1000 concurrent `set_duty_cycle()` calls)
-- [ ] Optional: `MockHardwarePWMWithLatency` fixture that adds configurable `time.sleep` per call to validate timing instrumentation under simulated sysfs delays
+- [ ] `MockHardwarePWMWithLatency` fixture for timing instrumentation tests
+- [ ] `sw/tests/test_pwm_controller_hw.py` — hardware integration tests that exercise real `HardwarePWM` on Pi 5
+- [ ] `pytest` marker `@pytest.mark.hardware` on all hardware tests; skipped automatically when not on Pi 5
 
 #### Implementation Details
 
 **Test file structure** (built incrementally across phases):
 ```
-TestPhase1: validation tests
-TestPhase2: lifecycle tests (start, stop, fail_safe, enable/disable)
-TestPhase3: update, timing stats, frequency opt-in enforcement
-TestPhase4: lock behavior (lock not held during I/O)
-TestPhase5: coverage gap fill, stress test, latency simulation
+test_pwm_controller.py (mock-based, runs anywhere):
+    TestPhase1: validation tests
+    TestPhase2: lifecycle tests (start, stop, fail_safe, enable/disable)
+    TestPhase3: update, timing stats, frequency opt-in enforcement
+    TestPhase4: lock behavior (lock not held during I/O)
+    TestPhase5: coverage gap fill, stress test, latency simulation
+
+test_pwm_controller_hw.py (hardware tests, @pytest.mark.hardware):
+    TestHardware: full 4-channel init, update, fail_safe, and timing on real Pi 5 sysfs
 ```
+
+**Hardware test auto-skip**: `conftest.py` checks for Pi 5 hardware at session start. If not running on a Pi, all `@pytest.mark.hardware` tests are automatically skipped with a message. To run on hardware: `pytest -m hardware sw/tests/test_pwm_controller_hw.py`.
 
 **Mock fixture** (defined in conftest.py or top of test file):
 ```python
@@ -380,13 +391,15 @@ def test_concurrent_set_duty_cycle(mock_hwpwm):
 #### Acceptance Criteria
 - [ ] `pytest sw/tests/test_pwm_controller.py` passes with no hardware attached
 - [ ] Coverage ≥90% on `sw/pwm_controller.py` (`pytest --cov=sw.pwm_controller`)
-- [ ] No test relies on real `HardwarePWM` or sysfs
+- [ ] No mock-based test relies on real `HardwarePWM` or sysfs
 - [ ] Thread-safety stress test completes without exception
 - [ ] Latency simulation test verifies `get_timing_stats()` reports p50 > 0
+- [ ] `pytest -m hardware sw/tests/test_pwm_controller_hw.py` passes on real Pi 5 hardware
+- [ ] Hardware tests are auto-skipped (not failed) when not running on Pi 5
 
 #### Test Plan
-- All unit; no real hardware needed.
-- Coverage measured with `pytest --cov=sw.pwm_controller`.
+- Mock-based tests: run anywhere, no hardware needed. Coverage measured with `pytest --cov=sw.pwm_controller`.
+- Hardware integration tests: run on Pi 5. Use all 4 channels. Measure real sysfs latency and verify timing stats.
 
 #### Rollback Strategy
 Remove stress test and latency simulation tests; tests from Phases 1–4 remain.
@@ -408,7 +421,8 @@ Phase 1 (Data Model) ──→ Phase 2 (Lifecycle) ──→ Phase 3 (Update + T
 
 ### Infrastructure
 - No new services or database changes
-- Tests run on any machine (mock backend — no Raspberry Pi required for unit tests)
+- Mock-based tests run on any machine (no Raspberry Pi required)
+- Hardware integration tests require Raspberry Pi 5 with all 4 PWM channels accessible
 
 ## Integration Points
 ### Internal Systems
@@ -447,3 +461,4 @@ Phase 1 (Data Model) ──→ Phase 2 (Lifecycle) ──→ Phase 3 (Update + T
 |------|--------|--------|
 | 2026-03-09 | Initial plan draft | SPIR plan phase |
 | 2026-03-09 | Plan revision after 3-way review (Amendment 1) | Addressed Gemini COMMENT, Codex REQUEST_CHANGES, Claude COMMENT — see 1-plan-iter1-rebuttals.md |
+| 2026-03-10 | Architect annotation review (Amendment 2) | Max channel count (all 4 Pi 5 channels); hardware integration test suite added |

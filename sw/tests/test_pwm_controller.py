@@ -236,6 +236,12 @@ class TestPhase2:
         ctrl.start()
         assert ctrl._running is True
 
+    def test_start_forces_channels_disabled(self, mock_hwpwm):
+        """start() must force all channels to disabled even if config has enabled=True."""
+        ctrl = PWMController([make_config(enabled=True)])
+        ctrl.start()
+        assert ctrl._channels["ch0"].enabled is False
+
     def test_start_twice_raises(self, mock_hwpwm):
         ctrl = PWMController([make_config()])
         ctrl.start()

@@ -213,6 +213,7 @@ class PWMController:
         initialized: list[str] = []
         try:
             for cid, cfg in self._channels.items():
+                cfg.enabled = False  # channels must start disabled
                 pwm = HardwarePWM(pwm_channel=cfg.pwm_channel, hz=cfg.freq_hz, chip=cfg.chip)
                 pwm.start(0)
                 self._hwpwm[cid] = pwm

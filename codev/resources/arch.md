@@ -19,17 +19,29 @@ project-root/
 
 ## Key Components
 
-<!-- Document major modules, services, or subsystems -->
+### PWMController (hardware PWM management)
 
-### Component 1
+**Location**: `sw/pwm_controller.py`
 
-**Location**: `src/...`
-
-**Purpose**: ...
+**Purpose**: Centralized thread-safe hardware PWM controller for Raspberry Pi 5.
+Manages 1–4 PWM channels, validates commands against per-channel ranges,
+applies synchronized sequential updates via `update()`, instruments latency,
+and enforces fail-safe state (duty=0, disabled) on any fault.
 
 **Key Files**:
-- `file1.ts` - ...
-- `file2.ts` - ...
+- `sw/pwm_controller.py` — `ChannelConfig`, `PWMController`, `PWMUpdateError`
+- `sw/tests/test_pwm_controller.py` — mock-based unit tests (100% coverage)
+- `sw/tests/test_pwm_controller_hw.py` — hardware integration tests (Pi 5 only)
+- `sw/tests/conftest.py` — `@pytest.mark.hardware` auto-skip on non-Pi hardware
+
+**Key Design Decisions**:
+- External scheduler drives `update()` — class does not own a control loop
+- `threading.Lock` protects `_pending`, `_channels` (enabled flags), `_timings`;
+  lock released before sysfs I/O to avoid blocking command-staging threads
+- `fail_safe()` uses `change_duty_cycle(0)` only (no `pwm.stop()`); sysfs
+  registration preserved for continued use or clean teardown via `stop()`
+- Runtime frequency changes opt-in per channel (`allow_runtime_freq_change=False`
+  by default) due to transient 0% duty glitch in sysfs backend
 
 ## Data Flow
 

@@ -17,10 +17,13 @@ API contract:
 from __future__ import annotations
 
 import logging
+import time
 import threading
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Optional
+
+import numpy as np
 
 try:
     from rpi_hardware_pwm import HardwarePWM  # type: ignore[import]
@@ -300,6 +303,8 @@ class PWMController:
     def set_duty_cycle(self, channel_id: str, duty_pct: float) -> None:
         """Stage a duty-cycle change for the given channel.
 
+        The change is applied on the next update() call.
+
         Args:
             channel_id: The channel to update.
             duty_pct: New duty cycle in percent (0.0–100.0, within channel limits).
@@ -309,3 +314,95 @@ class PWMController:
             ValueError: If channel_id is unknown or duty_pct is out of range.
         """
         self._require_started()
+        self._validate_duty(channel_id, duty_pct)
+        self._pending[channel_id].duty_pct = duty_pct
+
+    def set_frequency(self, channel_id: str, freq_hz: float) -> None:
+        """Stage a frequency change for the given channel.
+
+        Frequency changes are only permitted when the channel's
+        ``allow_runtime_freq_change`` flag is True.
+
+        WARNING: The sysfs backend momentarily zeroes duty cycle during a
+        frequency change, which may disturb BLDC motors. Enable only when
+        the application can tolerate this transient glitch.
+
+        Args:
+            channel_id: The channel to update.
+            freq_hz: New PWM carrier frequency in Hz (within channel limits).
+
+        Raises:
+            RuntimeError: If the controller has not been started, or if
+                ``allow_runtime_freq_change`` is False for the channel.
+            ValueError: If channel_id is unknown or freq_hz is out of range.
+        """
+        self._require_started()
+        self._validate_frequency(channel_id, freq_hz)
+        cfg = self._channels[channel_id]
+        if not cfg.allow_runtime_freq_change:
+            raise RuntimeError(
+                f"Runtime frequency changes not allowed for channel '{channel_id}'. "
+                "Set allow_runtime_freq_change=True in ChannelConfig to enable."
+            )
+        logger.warning(
+            "set_frequency: channel '%s' frequency change to %.1f Hz will cause a "
+            "momentary 0%% duty-cycle glitch on the sysfs backend.",
+            channel_id,
+            freq_hz,
+        )
+        self._pending[channel_id].freq_hz = freq_hz
+
+    def update(self) -> None:
+        """Apply all pending commands to enabled channels sequentially.
+
+        Iterates channels in registration order, applies staged duty cycle and
+        frequency changes to enabled channels, and records the total elapsed
+        time for this call.
+
+        On any hardware write failure, immediately invokes fail_safe() and
+        raises PWMUpdateError.
+
+        Raises:
+            RuntimeError: If the controller has not been started.
+            PWMUpdateError: If a hardware write fails on any channel.
+        """
+        self._require_started()
+        t_start = time.monotonic()
+
+        for cid, cfg in self._channels.items():
+            if not cfg.enabled:
+                continue
+            pending = self._pending[cid]
+            pwm = self._hwpwm.get(cid)
+            if pwm is None:
+                continue
+            try:
+                if pending.duty_pct is not None:
+                    pwm.change_duty_cycle(pending.duty_pct)
+                    pending.duty_pct = None
+                if pending.freq_hz is not None:
+                    pwm.change_frequency(pending.freq_hz)
+                    pending.freq_hz = None
+            except Exception as exc:
+                self.fail_safe()
+                raise PWMUpdateError(cid, exc) from exc
+
+        t_end = time.monotonic()
+        self._timings.append(t_end - t_start)
+
+    def get_timing_stats(self) -> dict:
+        """Return latency statistics for update() calls.
+
+        Returns:
+            A dict with keys ``p50_ms``, ``p95_ms``, ``p99_ms``, ``count``.
+            Returns ``{"count": 0}`` if no update() calls have been recorded.
+        """
+        if not self._timings:
+            return {"count": 0}
+        arr = np.array(self._timings) * 1000.0  # convert seconds → ms
+        return {
+            "p50_ms": float(np.percentile(arr, 50)),
+            "p95_ms": float(np.percentile(arr, 95)),
+            "p99_ms": float(np.percentile(arr, 99)),
+            "count": len(self._timings),
+        }

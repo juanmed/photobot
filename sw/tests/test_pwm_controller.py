@@ -357,3 +357,135 @@ class TestPhase2:
         ctrl.disable_channel("ch0")
         instances[0].change_duty_cycle.assert_called_with(0)
         assert ctrl._channels["ch0"].enabled is False
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: Synchronized Update with Timing Instrumentation
+# ---------------------------------------------------------------------------
+
+
+class TestPhase3:
+
+    def test_set_duty_cycle_stages_pending(self, mock_hwpwm):
+        ctrl = PWMController([make_config()])
+        ctrl.start()
+        ctrl.set_duty_cycle("ch0", 75.0)
+        assert ctrl._pending["ch0"].duty_pct == 75.0
+
+    def test_set_duty_cycle_invalid_raises(self, mock_hwpwm):
+        ctrl = PWMController([make_config(duty_min_pct=5.0, duty_max_pct=95.0)])
+        ctrl.start()
+        with pytest.raises(ValueError):
+            ctrl.set_duty_cycle("ch0", 99.0)
+
+    def test_set_frequency_blocked_by_flag(self, mock_hwpwm):
+        ctrl = PWMController([make_config(allow_runtime_freq_change=False)])
+        ctrl.start()
+        with pytest.raises(RuntimeError, match="not allowed"):
+            ctrl.set_frequency("ch0", 100.0)
+
+    def test_set_frequency_allowed_when_flag_true(self, mock_hwpwm):
+        ctrl = PWMController([make_config(allow_runtime_freq_change=True)])
+        ctrl.start()
+        ctrl.set_frequency("ch0", 200.0)
+        assert ctrl._pending["ch0"].freq_hz == 200.0
+
+    def test_set_frequency_invalid_range_raises(self, mock_hwpwm):
+        ctrl = PWMController([make_config(allow_runtime_freq_change=True)])
+        ctrl.start()
+        with pytest.raises(ValueError):
+            ctrl.set_frequency("ch0", 1000.0)  # above max 400 Hz
+
+    def test_update_applies_pending_duty(self, mock_hwpwm):
+        _, instances = mock_hwpwm
+        ctrl = PWMController([make_config()])
+        ctrl.start()
+        ctrl.enable_channel("ch0")
+        ctrl.set_duty_cycle("ch0", 50.0)
+        ctrl.update()
+        instances[0].change_duty_cycle.assert_called_with(50.0)
+
+    def test_update_applies_pending_freq(self, mock_hwpwm):
+        _, instances = mock_hwpwm
+        ctrl = PWMController([make_config(allow_runtime_freq_change=True)])
+        ctrl.start()
+        ctrl.enable_channel("ch0")
+        ctrl.set_frequency("ch0", 200.0)
+        ctrl.update()
+        instances[0].change_frequency.assert_called_with(200.0)
+
+    def test_update_skips_disabled_channels(self, mock_hwpwm):
+        _, instances = mock_hwpwm
+        ctrl = PWMController([make_config()])
+        ctrl.start()
+        # channel disabled (default); stage a command
+        ctrl._pending["ch0"].duty_pct = 50.0
+        ctrl.update()
+        instances[0].change_duty_cycle.assert_not_called()
+
+    def test_update_clears_pending_after_apply(self, mock_hwpwm):
+        ctrl = PWMController([make_config()])
+        ctrl.start()
+        ctrl.enable_channel("ch0")
+        ctrl.set_duty_cycle("ch0", 50.0)
+        ctrl.update()
+        assert ctrl._pending["ch0"].duty_pct is None
+
+    def test_update_on_failure_calls_fail_safe_and_raises(self, mock_hwpwm):
+        _, instances = mock_hwpwm
+        ctrl = PWMController([make_config()])
+        ctrl.start()
+        # instances populated after start()
+        instances[0].change_duty_cycle.side_effect = OSError("sysfs error")
+        ctrl.enable_channel("ch0")
+        ctrl.set_duty_cycle("ch0", 50.0)
+        from sw.pwm_controller import PWMUpdateError
+        with pytest.raises(PWMUpdateError):
+            ctrl.update()
+        assert ctrl._running is False  # fail_safe was called
+
+    def test_update_records_timing(self, mock_hwpwm):
+        ctrl = PWMController([make_config()])
+        ctrl.start()
+        ctrl.update()
+        assert len(ctrl._timings) == 1
+
+    def test_get_timing_stats_empty(self):
+        ctrl = PWMController([make_config()])
+        stats = ctrl.get_timing_stats()
+        assert stats == {"count": 0}
+
+    def test_get_timing_stats_after_updates(self, mock_hwpwm):
+        ctrl = PWMController([make_config()])
+        ctrl.start()
+        for _ in range(10):
+            ctrl.update()
+        stats = ctrl.get_timing_stats()
+        assert stats["count"] == 10
+        assert "p50_ms" in stats
+        assert "p95_ms" in stats
+        assert "p99_ms" in stats
+
+    def test_timing_buffer_bounded(self, mock_hwpwm):
+        ctrl = PWMController([make_config()])
+        ctrl.start()
+        for _ in range(15000):
+            ctrl.update()
+        assert len(ctrl._timings) == 10000  # deque maxlen
+
+    def test_update_registration_order(self, mock_hwpwm):
+        """Channels updated in insertion (registration) order."""
+        _, instances = mock_hwpwm
+        channels = [
+            make_config("ch0", 0),
+            make_config("ch1", 1),
+            make_config("ch2", 2),
+        ]
+        ctrl = PWMController(channels)
+        ctrl.start()
+        for cid in ("ch0", "ch1", "ch2"):
+            ctrl.enable_channel(cid)
+            ctrl.set_duty_cycle(cid, 30.0)
+        ctrl.update()
+        for i in range(3):
+            instances[i].change_duty_cycle.assert_called_with(30.0)

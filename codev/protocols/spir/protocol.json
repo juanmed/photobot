@@ -80,13 +80,13 @@
       },
       "checks": {
         "build": {
-          "command": "npm run build",
+          "command": "python3 -c 'import sw.pwm_controller; print(\"import ok\")'",
           "on_fail": "retry",
           "max_retries": 2
         },
         "tests": {
-          "command": "npm test -- --exclude='**/e2e/**'",
-          "description": "Unit tests only - e2e tests run in review phase",
+          "command": "pytest sw/tests/test_pwm_controller.py -q",
+          "description": "Unit tests only",
           "on_fail": "retry",
           "max_retries": 2
         }
@@ -129,8 +129,8 @@
           "description": "Review must include '## Lessons Learned Updates' section (what changed in lessons-learned.md, or why no changes needed)"
         },
         "e2e_tests": {
-          "command": "npm run test:e2e 2>&1 || echo 'e2e tests skipped (not configured)'",
-          "description": "Full e2e test suite - only runs in review phase",
+          "command": "pytest sw/tests/ -q 2>&1 || echo 'e2e tests skipped (not configured)'",
+          "description": "Full test suite - only runs in review phase",
           "optional": true
         }
       },
@@ -149,8 +149,8 @@
     }
   },
   "phase_completion": {
-    "build_succeeds": "npm run build 2>&1",
-    "tests_pass": "npm test 2>&1",
+    "build_succeeds": "python3 -c 'import sw.pwm_controller' 2>&1",
+    "tests_pass": "pytest sw/tests/test_pwm_controller.py -q 2>&1",
     "commit_has_code": "git log -1 --name-only --pretty=format: | grep -qE '\\.(ts|tsx|js|jsx|py|go|rs)$'"
   },
   "defaults": {

@@ -583,7 +583,10 @@ class TestPhase5:
     # --- Thread-safety stress test ---
 
     def test_concurrent_set_duty_cycle(self, mock_hwpwm):
-        """10 threads × 1000 set_duty_cycle calls; no exceptions or corruption."""
+        """10 writer threads × 1000 set_duty_cycle calls + 1 update() thread.
+
+        Verifies no exceptions and final pending state is consistent.
+        """
         import threading
 
         channels = [make_config(f"ch{i}", i) for i in range(4)]
@@ -593,22 +596,36 @@ class TestPhase5:
             ctrl.enable_channel(f"ch{i}")
 
         errors = []
+        stop_updater = threading.Event()
 
-        def worker(cid, duty):
+        def updater():
+            while not stop_updater.is_set():
+                try:
+                    ctrl.update()
+                except Exception as e:
+                    errors.append(e)
+
+        def writer(cid, duty):
             try:
                 for _ in range(1000):
                     ctrl.set_duty_cycle(cid, duty)
             except Exception as e:
                 errors.append(e)
 
-        threads = [
-            threading.Thread(target=worker, args=(f"ch{i % 4}", float(i % 100)))
+        update_thread = threading.Thread(target=updater, daemon=True)
+        update_thread.start()
+
+        writer_threads = [
+            threading.Thread(target=writer, args=(f"ch{i % 4}", float(i % 100)))
             for i in range(10)
         ]
-        for t in threads:
+        for t in writer_threads:
             t.start()
-        for t in threads:
+        for t in writer_threads:
             t.join()
+
+        stop_updater.set()
+        update_thread.join(timeout=2.0)
 
         assert not errors, f"Thread errors: {errors}"
         for i in range(4):
@@ -617,15 +634,16 @@ class TestPhase5:
 
     # --- Latency simulation test ---
 
-    def test_timing_stats_with_latency_simulation(self, mock_hwpwm_slow):
+    def test_timing_stats_with_latency_simulation(self):
+        """get_timing_stats() must reflect injected sysfs latency (p50 > 0)."""
+        import time as _time
         from unittest.mock import patch, MagicMock
 
         with patch("sw.pwm_controller.HardwarePWM") as mock_cls:
             inst = MagicMock()
-            import time as _time
 
             def slow_duty(val):
-                _time.sleep(0.0001)
+                _time.sleep(0.0001)  # 0.1ms simulated sysfs latency
 
             inst.change_duty_cycle.side_effect = slow_duty
             mock_cls.return_value = inst
@@ -639,7 +657,7 @@ class TestPhase5:
 
             stats = ctrl.get_timing_stats()
             assert stats["count"] == 10
-            assert stats["p50_ms"] >= 0.0
+            assert stats["p50_ms"] > 0.0  # must reflect actual latency
 
     # --- Coverage gap fill: stop() with pwm.stop() raising ---
 

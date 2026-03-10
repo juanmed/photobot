@@ -273,7 +273,8 @@ class PWMController:
         self._require_started()
         if channel_id not in self._channels:
             raise ValueError(f"Unknown channel_id: '{channel_id}'")
-        self._channels[channel_id].enabled = True
+        with self._lock:
+            self._channels[channel_id].enabled = True
 
     def disable_channel(self, channel_id: str) -> None:
         """Write duty=0 immediately and mark the channel inactive.
@@ -294,7 +295,8 @@ class PWMController:
         pwm = self._hwpwm.get(channel_id)
         if pwm is not None:
             pwm.change_duty_cycle(0)
-        self._channels[channel_id].enabled = False
+        with self._lock:
+            self._channels[channel_id].enabled = False
 
     # ------------------------------------------------------------------
     # Public command interface (stubs — fully implemented in later phases)
@@ -315,7 +317,8 @@ class PWMController:
         """
         self._require_started()
         self._validate_duty(channel_id, duty_pct)
-        self._pending[channel_id].duty_pct = duty_pct
+        with self._lock:
+            self._pending[channel_id].duty_pct = duty_pct
 
     def set_frequency(self, channel_id: str, freq_hz: float) -> None:
         """Stage a frequency change for the given channel.
@@ -350,14 +353,17 @@ class PWMController:
             channel_id,
             freq_hz,
         )
-        self._pending[channel_id].freq_hz = freq_hz
+        with self._lock:
+            self._pending[channel_id].freq_hz = freq_hz
 
     def update(self) -> None:
         """Apply all pending commands to enabled channels sequentially.
 
-        Iterates channels in registration order, applies staged duty cycle and
-        frequency changes to enabled channels, and records the total elapsed
-        time for this call.
+        Snapshots and clears the pending command state under the lock, then
+        performs hardware I/O outside the lock so that command-staging threads
+        are not blocked during sysfs writes.
+
+        Iterates channels in registration order and records total elapsed time.
 
         On any hardware write failure, immediately invokes fail_safe() and
         raises PWMUpdateError.
@@ -369,20 +375,32 @@ class PWMController:
         self._require_started()
         t_start = time.monotonic()
 
+        # Snapshot and clear pending state under the lock.
+        with self._lock:
+            snapshot: dict[str, _PendingCommand] = {}
+            for cid, pending in self._pending.items():
+                snapshot[cid] = _PendingCommand(
+                    duty_pct=pending.duty_pct,
+                    freq_hz=pending.freq_hz,
+                )
+                pending.duty_pct = None
+                pending.freq_hz = None
+
+        # Apply commands to hardware outside the lock.
         for cid, cfg in self._channels.items():
             if not cfg.enabled:
                 continue
-            pending = self._pending[cid]
+            cmd = snapshot.get(cid)
+            if cmd is None:
+                continue
             pwm = self._hwpwm.get(cid)
             if pwm is None:
                 continue
             try:
-                if pending.duty_pct is not None:
-                    pwm.change_duty_cycle(pending.duty_pct)
-                    pending.duty_pct = None
-                if pending.freq_hz is not None:
-                    pwm.change_frequency(pending.freq_hz)
-                    pending.freq_hz = None
+                if cmd.duty_pct is not None:
+                    pwm.change_duty_cycle(cmd.duty_pct)
+                if cmd.freq_hz is not None:
+                    pwm.change_frequency(cmd.freq_hz)
             except Exception as exc:
                 self.fail_safe()
                 raise PWMUpdateError(cid, exc) from exc

@@ -489,3 +489,64 @@ class TestPhase3:
         ctrl.update()
         for i in range(3):
             instances[i].change_duty_cycle.assert_called_with(30.0)
+
+
+# ---------------------------------------------------------------------------
+# Phase 4: Thread-Safe Command Interface
+# ---------------------------------------------------------------------------
+
+
+class TestPhase4:
+
+    def test_set_duty_cycle_concurrent_no_corruption(self, mock_hwpwm):
+        """Two threads calling set_duty_cycle concurrently must not corrupt _pending."""
+        import threading
+
+        ctrl = PWMController([make_config("ch0", 0), make_config("ch1", 1)])
+        ctrl.start()
+
+        errors = []
+
+        def writer(cid, duty):
+            try:
+                for _ in range(500):
+                    ctrl.set_duty_cycle(cid, duty)
+            except Exception as e:
+                errors.append(e)
+
+        t1 = threading.Thread(target=writer, args=("ch0", 30.0))
+        t2 = threading.Thread(target=writer, args=("ch1", 60.0))
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
+
+        assert not errors, f"Thread errors: {errors}"
+        # pending values are within valid range
+        assert ctrl._pending["ch0"].duty_pct in (None, 30.0)
+        assert ctrl._pending["ch1"].duty_pct in (None, 60.0)
+
+    def test_update_releases_lock_before_hardware_io(self, mock_hwpwm):
+        """Lock must be released before change_duty_cycle is called in update()."""
+        _, instances = mock_hwpwm
+        lock_held_during_io = []
+
+        ctrl = PWMController([make_config()])
+        ctrl.start()
+        # instances populated after start()
+
+        def tracking_change_duty(val):
+            # If the lock is still held during IO, tryacquire will fail
+            acquired = ctrl._lock.acquire(blocking=False)
+            lock_held_during_io.append(not acquired)
+            if acquired:
+                ctrl._lock.release()
+            # No need to delegate — mock return value is sufficient
+
+        instances[0].change_duty_cycle.side_effect = tracking_change_duty
+        ctrl.enable_channel("ch0")
+        ctrl.set_duty_cycle("ch0", 50.0)
+        ctrl.update()
+
+        assert lock_held_during_io, "change_duty_cycle was never called"
+        assert not any(lock_held_during_io), "Lock was held during hardware I/O"

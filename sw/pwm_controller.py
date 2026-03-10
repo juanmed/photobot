@@ -375,27 +375,24 @@ class PWMController:
         self._require_started()
         t_start = time.monotonic()
 
-        # Snapshot and clear pending state under the lock.
+        # Snapshot pending commands, enabled flags, and hwpwm references under
+        # the lock, then release it before any sysfs I/O.
         with self._lock:
-            snapshot: dict[str, _PendingCommand] = {}
+            snapshot: list[tuple[str, _PendingCommand, object]] = []
             for cid, pending in self._pending.items():
-                snapshot[cid] = _PendingCommand(
-                    duty_pct=pending.duty_pct,
-                    freq_hz=pending.freq_hz,
-                )
+                cfg = self._channels[cid]
+                if not cfg.enabled:
+                    continue
+                pwm = self._hwpwm.get(cid)
+                if pwm is None:
+                    continue
+                cmd = _PendingCommand(duty_pct=pending.duty_pct, freq_hz=pending.freq_hz)
                 pending.duty_pct = None
                 pending.freq_hz = None
+                snapshot.append((cid, cmd, pwm))
 
         # Apply commands to hardware outside the lock.
-        for cid, cfg in self._channels.items():
-            if not cfg.enabled:
-                continue
-            cmd = snapshot.get(cid)
-            if cmd is None:
-                continue
-            pwm = self._hwpwm.get(cid)
-            if pwm is None:
-                continue
+        for cid, cmd, pwm in snapshot:
             try:
                 if cmd.duty_pct is not None:
                     pwm.change_duty_cycle(cmd.duty_pct)
@@ -406,7 +403,8 @@ class PWMController:
                 raise PWMUpdateError(cid, exc) from exc
 
         t_end = time.monotonic()
-        self._timings.append(t_end - t_start)
+        with self._lock:
+            self._timings.append(t_end - t_start)
 
     def get_timing_stats(self) -> dict:
         """Return latency statistics for update() calls.

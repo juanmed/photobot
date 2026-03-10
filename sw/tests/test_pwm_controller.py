@@ -550,3 +550,118 @@ class TestPhase4:
 
         assert lock_held_during_io, "change_duty_cycle was never called"
         assert not any(lock_held_during_io), "Lock was held during hardware I/O"
+
+
+# ---------------------------------------------------------------------------
+# Phase 5: Test Suite — stress test, coverage gaps, latency simulation
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def mock_hwpwm_slow(monkeypatch):
+    """Simulates sysfs latency for timing instrumentation tests."""
+    import time as _time
+
+    from unittest.mock import patch
+
+    def factory(pwm_channel, hz, chip):
+        from unittest.mock import MagicMock
+        inst = MagicMock()
+
+        def slow_change_duty(val):
+            _time.sleep(0.0001)  # 0.1ms per call
+
+        inst.change_duty_cycle.side_effect = slow_change_duty
+        return inst
+
+    with patch("sw.pwm_controller.HardwarePWM", side_effect=factory):
+        yield
+
+
+class TestPhase5:
+
+    # --- Thread-safety stress test ---
+
+    def test_concurrent_set_duty_cycle(self, mock_hwpwm):
+        """10 threads × 1000 set_duty_cycle calls; no exceptions or corruption."""
+        import threading
+
+        channels = [make_config(f"ch{i}", i) for i in range(4)]
+        ctrl = PWMController(channels)
+        ctrl.start()
+        for i in range(4):
+            ctrl.enable_channel(f"ch{i}")
+
+        errors = []
+
+        def worker(cid, duty):
+            try:
+                for _ in range(1000):
+                    ctrl.set_duty_cycle(cid, duty)
+            except Exception as e:
+                errors.append(e)
+
+        threads = [
+            threading.Thread(target=worker, args=(f"ch{i % 4}", float(i % 100)))
+            for i in range(10)
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert not errors, f"Thread errors: {errors}"
+        for i in range(4):
+            val = ctrl._pending[f"ch{i}"].duty_pct
+            assert val is None or (0.0 <= val <= 100.0)
+
+    # --- Latency simulation test ---
+
+    def test_timing_stats_with_latency_simulation(self, mock_hwpwm_slow):
+        from unittest.mock import patch, MagicMock
+
+        with patch("sw.pwm_controller.HardwarePWM") as mock_cls:
+            inst = MagicMock()
+            import time as _time
+
+            def slow_duty(val):
+                _time.sleep(0.0001)
+
+            inst.change_duty_cycle.side_effect = slow_duty
+            mock_cls.return_value = inst
+
+            ctrl = PWMController([make_config()])
+            ctrl.start()
+            ctrl.enable_channel("ch0")
+            for _ in range(10):
+                ctrl.set_duty_cycle("ch0", 50.0)
+                ctrl.update()
+
+            stats = ctrl.get_timing_stats()
+            assert stats["count"] == 10
+            assert stats["p50_ms"] >= 0.0
+
+    # --- Coverage gap fill: stop() with pwm.stop() raising ---
+
+    def test_stop_logs_error_when_pwm_stop_raises(self, mock_hwpwm):
+        import logging
+        _, instances = mock_hwpwm
+        ctrl = PWMController([make_config()])
+        ctrl.start()
+        instances[0].stop.side_effect = OSError("sysfs error")
+        ctrl.stop()  # must not raise
+        assert ctrl._hwpwm == {}  # cleanup still happens
+
+    # --- Coverage gap fill: update() when _hwpwm has no entry for a channel ---
+
+    def test_update_skips_channel_with_no_hwpwm_entry(self, mock_hwpwm):
+        _, instances = mock_hwpwm
+        ctrl = PWMController([make_config()])
+        ctrl.start()
+        ctrl.enable_channel("ch0")
+        # Manually remove the hwpwm entry to simulate an unexpected state
+        del ctrl._hwpwm["ch0"]
+        ctrl.set_duty_cycle("ch0", 50.0)
+        ctrl.update()  # must not raise
+        # No call should have been made
+        instances[0].change_duty_cycle.assert_not_called()

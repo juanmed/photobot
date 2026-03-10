@@ -1,7 +1,7 @@
 {
   "shell": {
     "architect": "claude",
-    "builder": "codex",
+    "builder": "claude",
     "shell": "bash"
   }
 }

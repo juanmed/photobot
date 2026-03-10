@@ -187,6 +187,13 @@ class TestPhase1:
         with pytest.raises(RuntimeError, match="not started"):
             ctrl._require_started()
 
+    # --- set_duty_cycle before start ---
+
+    def test_set_duty_cycle_before_start_raises(self):
+        ctrl = PWMController([make_config()])
+        with pytest.raises(RuntimeError, match="not started"):
+            ctrl.set_duty_cycle("ch0", 50.0)
+
     def test_no_hardware_pwm_imported_or_instantiated(self):
         """Phase 1 must not exercise any HardwarePWM calls."""
         ctrl = PWMController(make_four_channels())

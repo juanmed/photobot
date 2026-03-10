@@ -187,3 +187,20 @@ class PWMController:
             raise RuntimeError(
                 "Controller not started. Call start() before issuing commands."
             )
+
+    # ------------------------------------------------------------------
+    # Public command interface (stubs — fully implemented in later phases)
+    # ------------------------------------------------------------------
+
+    def set_duty_cycle(self, channel_id: str, duty_pct: float) -> None:
+        """Stage a duty-cycle change for the given channel.
+
+        Args:
+            channel_id: The channel to update.
+            duty_pct: New duty cycle in percent (0.0–100.0, within channel limits).
+
+        Raises:
+            RuntimeError: If the controller has not been started.
+            ValueError: If channel_id is unknown or duty_pct is out of range.
+        """
+        self._require_started()

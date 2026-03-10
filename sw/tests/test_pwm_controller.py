@@ -198,3 +198,156 @@ class TestPhase1:
         """Phase 1 must not exercise any HardwarePWM calls."""
         ctrl = PWMController(make_four_channels())
         assert ctrl._hwpwm == {}
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: Hardware Lifecycle and Fail-Safe
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def mock_hwpwm(monkeypatch):
+    """Patch HardwarePWM with a mock that records calls."""
+    from unittest.mock import MagicMock, patch
+
+    instances: dict[int, MagicMock] = {}
+
+    def factory(pwm_channel, hz, chip):
+        inst = MagicMock()
+        inst.pwm_channel = pwm_channel
+        instances[pwm_channel] = inst
+        return inst
+
+    with patch("sw.pwm_controller.HardwarePWM", side_effect=factory) as mock_cls:
+        yield mock_cls, instances
+
+
+class TestPhase2:
+
+    def test_start_calls_start_zero_on_each_channel(self, mock_hwpwm):
+        _, instances = mock_hwpwm
+        ctrl = PWMController(make_four_channels())
+        ctrl.start()
+        for i in range(4):
+            instances[i].start.assert_called_once_with(0)
+
+    def test_start_sets_running(self, mock_hwpwm):
+        ctrl = PWMController([make_config()])
+        ctrl.start()
+        assert ctrl._running is True
+
+    def test_start_twice_raises(self, mock_hwpwm):
+        ctrl = PWMController([make_config()])
+        ctrl.start()
+        with pytest.raises(RuntimeError, match="already started"):
+            ctrl.start()
+
+    def test_start_partial_failure_calls_fail_safe(self, mock_hwpwm):
+        """If HardwarePWM init fails mid-way, fail_safe is called on prior instances."""
+        from unittest.mock import MagicMock, patch
+
+        call_count = 0
+
+        def failing_factory(pwm_channel, hz, chip):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 2:
+                raise RuntimeError("hardware error")
+            inst = MagicMock()
+            return inst
+
+        with patch("sw.pwm_controller.HardwarePWM", side_effect=failing_factory):
+            ctrl = PWMController(
+                [make_config("ch0", 0), make_config("ch1", 1)]
+            )
+            with pytest.raises(RuntimeError, match="hardware error"):
+                ctrl.start()
+            assert ctrl._running is False
+
+    def test_fail_safe_calls_change_duty_cycle_zero(self, mock_hwpwm):
+        _, instances = mock_hwpwm
+        ctrl = PWMController(make_four_channels())
+        ctrl.start()
+        ctrl.fail_safe()
+        for i in range(4):
+            instances[i].change_duty_cycle.assert_called_with(0)
+
+    def test_fail_safe_does_not_call_stop(self, mock_hwpwm):
+        _, instances = mock_hwpwm
+        ctrl = PWMController([make_config()])
+        ctrl.start()
+        ctrl.fail_safe()
+        instances[0].stop.assert_not_called()
+
+    def test_fail_safe_sets_running_false(self, mock_hwpwm):
+        ctrl = PWMController([make_config()])
+        ctrl.start()
+        assert ctrl._running is True
+        ctrl.fail_safe()
+        assert ctrl._running is False
+
+    def test_fail_safe_does_not_raise_on_channel_error(self, mock_hwpwm):
+        _, instances = mock_hwpwm
+        ctrl = PWMController([make_config()])
+        ctrl.start()
+        instances[0].change_duty_cycle.side_effect = OSError("sysfs error")
+        ctrl.fail_safe()  # must not raise
+
+    def test_fail_safe_marks_channels_disabled(self, mock_hwpwm):
+        ctrl = PWMController([make_config()])
+        ctrl.start()
+        ctrl.enable_channel("ch0")
+        assert ctrl._channels["ch0"].enabled is True
+        ctrl.fail_safe()
+        assert ctrl._channels["ch0"].enabled is False
+
+    def test_stop_calls_pwm_stop(self, mock_hwpwm):
+        _, instances = mock_hwpwm
+        ctrl = PWMController([make_config()])
+        ctrl.start()
+        ctrl.stop()
+        instances[0].stop.assert_called_once()
+
+    def test_stop_clears_hwpwm_references(self, mock_hwpwm):
+        ctrl = PWMController([make_config()])
+        ctrl.start()
+        ctrl.stop()
+        assert ctrl._hwpwm == {}
+
+    def test_enable_channel_before_start_raises(self):
+        ctrl = PWMController([make_config()])
+        with pytest.raises(RuntimeError, match="not started"):
+            ctrl.enable_channel("ch0")
+
+    def test_enable_channel_unknown_raises(self, mock_hwpwm):
+        ctrl = PWMController([make_config()])
+        ctrl.start()
+        with pytest.raises(ValueError, match="Unknown channel_id"):
+            ctrl.enable_channel("nonexistent")
+
+    def test_enable_channel_sets_enabled(self, mock_hwpwm):
+        ctrl = PWMController([make_config()])
+        ctrl.start()
+        assert ctrl._channels["ch0"].enabled is False
+        ctrl.enable_channel("ch0")
+        assert ctrl._channels["ch0"].enabled is True
+
+    def test_disable_channel_before_start_raises(self):
+        ctrl = PWMController([make_config()])
+        with pytest.raises(RuntimeError, match="not started"):
+            ctrl.disable_channel("ch0")
+
+    def test_disable_channel_unknown_raises(self, mock_hwpwm):
+        ctrl = PWMController([make_config()])
+        ctrl.start()
+        with pytest.raises(ValueError, match="Unknown channel_id"):
+            ctrl.disable_channel("nonexistent")
+
+    def test_disable_channel_writes_zero_duty_immediately(self, mock_hwpwm):
+        _, instances = mock_hwpwm
+        ctrl = PWMController([make_config()])
+        ctrl.start()
+        ctrl.enable_channel("ch0")
+        ctrl.disable_channel("ch0")
+        instances[0].change_duty_cycle.assert_called_with(0)
+        assert ctrl._channels["ch0"].enabled is False

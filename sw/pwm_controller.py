@@ -22,6 +22,11 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Optional
 
+try:
+    from rpi_hardware_pwm import HardwarePWM  # type: ignore[import]
+except ImportError:  # not available on non-Pi hardware
+    HardwarePWM = None  # type: ignore[assignment,misc]
+
 logger = logging.getLogger(__name__)
 
 
@@ -187,6 +192,105 @@ class PWMController:
             raise RuntimeError(
                 "Controller not started. Call start() before issuing commands."
             )
+
+    # ------------------------------------------------------------------
+    # Hardware lifecycle
+    # ------------------------------------------------------------------
+
+    def start(self) -> None:
+        """Initialize hardware PWM channels and transition to running state.
+
+        Creates one HardwarePWM instance per configured channel, initializes
+        each at 0% duty cycle. All channels start disabled; call
+        enable_channel() to activate.
+
+        Raises:
+            RuntimeError: If the controller is already started.
+        """
+        if self._running:
+            raise RuntimeError("Controller is already started.")
+
+        initialized: list[str] = []
+        try:
+            for cid, cfg in self._channels.items():
+                pwm = HardwarePWM(pwm_channel=cfg.pwm_channel, hz=cfg.freq_hz, chip=cfg.chip)
+                pwm.start(0)
+                self._hwpwm[cid] = pwm
+                initialized.append(cid)
+        except Exception:
+            # Clean up already-initialized channels before re-raising.
+            self.fail_safe()
+            raise
+
+        self._running = True
+
+    def fail_safe(self) -> None:
+        """Drive all channels to safe state (duty=0, disabled) without teardown.
+
+        Sets duty cycle to 0% on every initialized HardwarePWM channel and
+        marks all channels as disabled. Does NOT call pwm.stop() — the sysfs
+        entry is preserved for continued use or clean teardown via stop().
+
+        This method is always safe to call, even during exception handling.
+        It logs but does not re-raise per-channel errors.
+        """
+        for cid, pwm in self._hwpwm.items():
+            try:
+                pwm.change_duty_cycle(0)
+                self._channels[cid].enabled = False
+            except Exception as exc:
+                logger.error("fail_safe: error on channel '%s': %s", cid, exc)
+        self._running = False
+
+    def stop(self) -> None:
+        """Drive all channels to safe state and tear down hardware PWM instances.
+
+        Calls fail_safe() first (duty=0, all disabled), then calls pwm.stop()
+        on each channel to release the sysfs registration.
+        """
+        self.fail_safe()
+        for cid, pwm in list(self._hwpwm.items()):
+            try:
+                pwm.stop()
+            except Exception as exc:
+                logger.error("stop: error stopping channel '%s': %s", cid, exc)
+        self._hwpwm.clear()
+
+    def enable_channel(self, channel_id: str) -> None:
+        """Mark a channel as active so update() will apply commands to it.
+
+        Args:
+            channel_id: The channel to enable.
+
+        Raises:
+            RuntimeError: If the controller has not been started.
+            ValueError: If channel_id is unknown.
+        """
+        self._require_started()
+        if channel_id not in self._channels:
+            raise ValueError(f"Unknown channel_id: '{channel_id}'")
+        self._channels[channel_id].enabled = True
+
+    def disable_channel(self, channel_id: str) -> None:
+        """Write duty=0 immediately and mark the channel inactive.
+
+        The HardwarePWM instance is not torn down; re-enabling and calling
+        update() will resume driving the channel.
+
+        Args:
+            channel_id: The channel to disable.
+
+        Raises:
+            RuntimeError: If the controller has not been started.
+            ValueError: If channel_id is unknown.
+        """
+        self._require_started()
+        if channel_id not in self._channels:
+            raise ValueError(f"Unknown channel_id: '{channel_id}'")
+        pwm = self._hwpwm.get(channel_id)
+        if pwm is not None:
+            pwm.change_duty_cycle(0)
+        self._channels[channel_id].enabled = False
 
     # ------------------------------------------------------------------
     # Public command interface (stubs — fully implemented in later phases)

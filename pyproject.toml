@@ -8,10 +8,13 @@ dependencies = [
     "asyncio>=4.0.0",
     "gpiozero>=2.0.1",
     "lgpio>=0.2.2.0",
+    "mediapy>=1.2.6",
     "numpy>=2.4.2",
     "opencv-python>=4.13.0.92",
     "pytest>=9.0.2",
     "rpi-hardware-pwm>=0.3.1",
+    "tensorflow-hub>=0.16.1",
+    "tensorflow[and-cuda]>=2.21.0",
     "ultralytics>=8.4.33",
 ]
 

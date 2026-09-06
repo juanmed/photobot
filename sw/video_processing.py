@@ -8,9 +8,15 @@ import cv2
 import numpy as np
 from ultralytics import YOLO
 
+from frame_interpolator import FrameInterpolator
+
 ZOOMED_FRAME_RATIO = 0.7
 ZOOM_RATIO = 0.6
 ZOOM_TRANSITION_RATIO = 0.05
+
+INTERPOLATION_START = 0.1
+INTERPOLATION_END = 0.9
+INTERPOLATION_N = 4
 
 
 def iter_video_paths(input_dir: Path) -> list[Path]:
@@ -80,7 +86,9 @@ def enqueue_videos(
     video_paths: Iterable[Path],
     output_queue: mp.Queue,
 ) -> None:
-    """Read frames from videos, apply zoom effect, and enqueue them for inference."""
+    """Read frames from videos, apply zoom effect and interpolation, and enqueue them."""
+    interpolator = FrameInterpolator(n_interpolated_frames=INTERPOLATION_N)
+
     for video_path in video_paths:
         cap = cv2.VideoCapture(str(video_path))
         if not cap.isOpened():
@@ -95,13 +103,19 @@ def enqueue_videos(
             ZOOM_TRANSITION_RATIO,
         )
 
+        interp_start_idx = int(total_frames * INTERPOLATION_START)
+        interp_end_idx = int(total_frames * INTERPOLATION_END)
+
         frame_idx = 0
+        output_idx = 0
+        prev_frame: np.ndarray | None = None
+
         while True:
             ok, frame = cap.read()
             if not ok:
                 break
             height, width = frame.shape[:2]
-            #print(f"{video_path.name} frame {frame_idx}: {width}x{height}")
+            print("Processing: ", frame_idx)
 
             zoom_value = zoomed_map.get(frame_idx)
             if zoom_value is not None and zoom_value < 1.0:
@@ -114,7 +128,23 @@ def enqueue_videos(
                 frame = crop_and_resize(
                     frame, (crop_h, crop_w), (start_row, start_col))
 
-            output_queue.put((video_path.name, frame_idx, frame))
+            # Pair-based interpolation: interpolate (prev, current) when both
+            # fall within the interpolation window.
+            if (
+                prev_frame is not None
+                and (frame_idx - 1) >= interp_start_idx
+                and frame_idx <= interp_end_idx
+            ):
+                interp_frames = interpolator.interpolate(prev_frame, frame)
+                for interp_frame in interp_frames:
+                    output_queue.put(
+                        (video_path.name, output_idx, interp_frame, True)
+                    )
+                    output_idx += 1
+
+            output_queue.put((video_path.name, output_idx, frame, False))
+            output_idx += 1
+            prev_frame = frame
             frame_idx += 1
 
         cap.release()
@@ -189,13 +219,18 @@ async def inference_loop(
                 await asyncio.to_thread(q.put, None)
             break
 
-        video_name, frame_idx, frame = item
-        results = model.predict(frame, verbose=False)
-        result = results[0]
-        masks = extract_person_masks(result, person_class_id)
+        video_name, output_idx, frame, is_interpolated = item
+
+        if is_interpolated:
+            masks: list[np.ndarray] = []
+        else:
+            results = model.predict(frame, verbose=False)
+            result = results[0]
+            masks = extract_person_masks(result, person_class_id)
+
         # Fan out: each consumer gets its own copy of the result
         for q in output_queues:
-            await asyncio.to_thread(q.put, (video_name, frame_idx, frame, masks))
+            await asyncio.to_thread(q.put, (video_name, output_idx, frame, masks))
 
 
 async def display_loop(output_queue: mp.Queue, window_name: str) -> None:
@@ -230,7 +265,7 @@ async def video_writer_loop(
             break
 
         video_name, _, frame, masks = item
-        annotated = draw_person_masks(frame, masks)
+        annotated = frame # draw_person_masks(frame, masks)
 
         # New video detected: close previous writer and open a new one
         if video_name != current_video_name:
